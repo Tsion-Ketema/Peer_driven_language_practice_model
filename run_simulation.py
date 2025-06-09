@@ -9,7 +9,8 @@ for _ in range(100):
 # Retrieve data
 model_df = model.datacollector.get_model_vars_dataframe()
 
-# Plot L2 usage over time
+# Plot L2 us
+# age over time
 model_df["L2_Usage"].plot(title="L2 Usage Over Time")
 plt.xlabel("Step")
 plt.ylabel("L2 Usage Ratio")

@@ -1,5 +1,3 @@
-# Final Version of L2CardSim: Peer-Based Language Practice Model
-
 import random
 from mesa import Model, Agent
 from mesa.time import RandomActivation
@@ -71,7 +69,7 @@ class LanguageClassModel(Model):
         )
 
         for i in range(self.num_agents):
-            level = random.choice([1, 2, 3])  # A1 to B1
+            level = random.choice([1, 2, 3, 4 , 5, 6])  # A1 to B1
             agent = StudentAgent(i, self, language_level=level)
             self.schedule.add(agent)
             x = random.randrange(self.grid.width)
