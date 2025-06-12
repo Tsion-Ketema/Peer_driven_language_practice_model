@@ -1,120 +1,105 @@
 import random
-from mesa import Model, Agent
+from mesa import Agent, Model
 from mesa.time import RandomActivation
 from mesa.space import MultiGrid
 from mesa.datacollection import DataCollector
 
-# Mapping of CEFR levels
-LEVEL_LABELS = {1: "A1", 2: "A2", 3: "B1", 4: "B2", 5: "C1", 6: "C2"}
-
 class StudentAgent(Agent):
-    def __init__(self, unique_id, model, language_level):
-        super(StudentAgent, self).__init__(unique_id, model)
-        self.language_level = language_level  # 1 (A1) to 6 (C2)
+    def __init__(self, unique_id, model, initial_motivation, initial_anxiety):
+        super().__init__(unique_id, model)
         self.language_used = "L1"
-        self.motivation = random.uniform(0.3, 0.8)
-        self.memory = 0
-        self.cards = 0
+        self.motivation = random.uniform(initial_motivation - 0.1, initial_motivation + 0.1)
+        self.anxiety = random.uniform(initial_anxiety - 0.1, initial_anxiety + 0.1)
+        self.cards = 1
+
 
     def decide_language(self):
-        probability_L2 = min(1.0, self.motivation + 0.1 * self.memory)
-        self.language_used = "L2" if random.random() < probability_L2 else "L1"
+        base_prob = self.motivation * 0.5 - self.anxiety * 0.4
+        card_effect = min(1.5, max(0, self.cards) * self.model.card_weight)
 
-    def interact(self):
-        cellmates = self.model.grid.get_cell_list_contents([self.pos])
-        others = [a for a in cellmates if a != self]
-        if self.language_used == "L2":
-            self.cards += 1
-            self.memory += 1
-        elif self.language_used == "L1":
-            self.cards = max(0, self.cards - 1)
-            self.memory = max(0, self.memory - 1)
+        neighbors = self.model.grid.get_neighbors(self.pos, moore=True, include_center=False)
+        if neighbors:
+            l2_neighbors = sum(1 for n in neighbors if n.language_used == "L2")
+            peer_pressure = l2_neighbors / len(neighbors)
+        else:
+            peer_pressure = 0
 
-    def improve_language(self):
-        if self.language_used == "L2" and random.random() < 0.1:
-            if self.language_level < 6:  # Max out at C2
-                self.language_level += 1
+        combined = base_prob + card_effect + peer_pressure * self.model.peer_influence
+        probability_L2 = min(1.0, max(0.0, combined / 2))
 
-    def move(self):
-        possible_steps = self.model.grid.get_neighborhood(
-            self.pos, moore=True, include_center=False
-        )
-        new_position = random.choice(possible_steps)
-        self.model.grid.move_agent(self, new_position)
+        if random.random() < 0.05:
+            self.language_used = "L1" if self.language_used == "L2" else "L2"
+        else:
+            self.language_used = "L2" if random.random() < probability_L2 else "L1"
 
     def step(self):
         self.decide_language()
-        self.interact()
-        self.improve_language()
-        self.move()
+        self.update_cards()
+
+    def update_cards(self):
+        neighbors = self.model.grid.get_neighbors(self.pos, moore=True, include_center=False)
+
+        if self.language_used == "L2":
+            self.cards = min(50, self.cards + 1.0)  # Cap growth
+            self.motivation = min(0.95, self.motivation + 0.03)
+            self.anxiety = max(0.1, self.anxiety - 0.02)
+
+            if neighbors:
+                l2_count = sum(1 for n in neighbors if n.language_used == "L2")
+                if l2_count >= len(neighbors) * 0.75:
+                    self.cards += 0.2  # Smaller bonus for strong L2 community
+
+        elif self.language_used == "L1":
+            if random.random() < 0.3:
+                self.cards = max(0, self.cards - 1.0)
+            self.motivation = max(0.2, self.motivation - 0.03)
+            self.anxiety = min(1.0, self.anxiety + 0.015)
 
 class LanguageClassModel(Model):
-    def __init__(self, N, width, height):
+    def __init__(self, N=25, width=5, height=5, max_steps=50,
+                 initial_motivation=0.65, initial_anxiety=0.3,
+                 peer_influence=0.4, card_weight=0.7):
+
         self.num_agents = N
-        self.grid = MultiGrid(width, height, torus=False)
+        self.grid = MultiGrid(width, height, True)
         self.schedule = RandomActivation(self)
-        self.step_count = 0
+        self.running = True
+        self.current_step = 0
+        self.max_steps = max_steps
+
+        self.initial_motivation = initial_motivation
+        self.initial_anxiety = initial_anxiety
+        self.peer_influence = peer_influence
+        self.card_weight = card_weight
+
+
 
         self.datacollector = DataCollector(
-            agent_reporters={
-                "Cards": lambda a: a.cards,
-                "Language": lambda a: a.language_used,
-                "Level": lambda a: LEVEL_LABELS.get(a.language_level, "Unknown"),
-            },
             model_reporters={
-                "Avg_Level": self.compute_avg_level,
-                "L2_Usage": self.compute_L2_usage,
-                "Card_Inequality": self.compute_card_gini,
+                "L2_Usage": lambda m: sum(1 for a in m.schedule.agents if a.language_used == "L2") / m.num_agents,
+                "L1_Usage": lambda m: sum(1 for a in m.schedule.agents if a.language_used == "L1") / m.num_agents,
+                "Avg_Cards": lambda m: sum(a.cards for a in m.schedule.agents) / m.num_agents,
+                "Low_Card_Students": lambda m: sum(1 for a in m.schedule.agents if a.cards <= 0),
+                "Avg_Motivation": lambda m: sum(a.motivation for a in m.schedule.agents) / m.num_agents,
+                "Avg_Anxiety": lambda m: sum(a.anxiety for a in m.schedule.agents) / m.num_agents,
             }
         )
 
         for i in range(self.num_agents):
-            level = random.choice([1, 2, 3, 4 , 5, 6])  # A1 to B1
-            agent = StudentAgent(i, self, language_level=level)
+            agent = StudentAgent(i, self, self.initial_motivation, self.initial_anxiety)
             self.schedule.add(agent)
             x = random.randrange(self.grid.width)
             y = random.randrange(self.grid.height)
             self.grid.place_agent(agent, (x, y))
 
-    def compute_avg_level(self):
-        levels = [agent.language_level for agent in self.schedule.agents]
-        return sum(levels) / len(levels) if levels else 0
-
-    def compute_L2_usage(self):
-        if len(self.schedule.agents) == 0:
-            return 0
-        l2_users = sum(1 for a in self.schedule.agents if a.language_used == "L2")
-        return l2_users / len(self.schedule.agents)
-
-    def compute_card_gini(self):
-        cards = [agent.cards for agent in self.schedule.agents]
-        if not cards or sum(cards) == 0:
-            return 0
-        cards.sort()
-        n = len(cards)
-        cumulative = 0
-        for i, x in enumerate(cards, 1):
-            cumulative += i * x
-        total = sum(cards)
-        gini = (2 * cumulative) / (n * total) - (n + 1) / n
-        return gini
+        self.datacollector.collect(self)
 
     def step(self):
-        self.schedule.step()
-        self.datacollector.collect(self)
-        self.step_count += 1
+        if self.current_step < self.max_steps:
+            self.schedule.step()
+            self.datacollector.collect(self)
+            self.current_step += 1
+        else:
+            self.running = False
 
-def agent_portrayal(agent):
-    if agent.language_used == "L2":
-        color = "green"
-    else:
-        color = "red"
 
-    portrayal = {
-        "Shape": "circle",
-        "Filled": True,
-        "Color": color,
-        "r": 0.8 * min(1, agent.cards / 10),
-        "Layer": 0,
-    }
-    return portrayal
